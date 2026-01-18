@@ -1,0 +1,4 @@
+pyjwt
+requests
+notion-client
+groq
