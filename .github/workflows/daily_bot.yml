@@ -1,0 +1,31 @@
+name: Daily AI News Bot
+
+on:
+  schedule:
+    # 매일 UTC 00:00 (한국 시간 오전 9시) 실행
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 수동으로 버튼 눌러서 실행 가능하게 함 (테스트용)
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 저장소 체크아웃 (코드 가져오기)
+        uses: actions/checkout@v3
+
+      - name: 파이썬 설정
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 라이브러리 설치
+        run: |
+          pip install requests beautifulsoup4 groq notion-client
+
+      - name: 봇 실행 (With Secrets)
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        run: python main.py
