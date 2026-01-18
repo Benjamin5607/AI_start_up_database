@@ -2,115 +2,106 @@ import os
 import requests
 import json
 import time
-import datetime
 from groq import Groq
 from notion_client import Client
-from bs4 import BeautifulSoup
 
-# --- 환경변수 설정 ---
+# --- 환경변수 로드 ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 
-groq_client = Groq(api_key=GROQ_API_KEY)
-notion_client = Client(auth=NOTION_API_KEY)
+client = Groq(api_key=GROQ_API_KEY)
+notion = Client(auth=NOTION_API_KEY)
 
-def get_alive_model():
+def get_best_model():
     try:
-        models = groq_client.models.list()
-        available = [m.id for m in models.data]
-        for m in available:
-            if "70b" in m and "llama-3" in m: return m
-        return available[0]
+        models = client.models.list()
+        ids = [m.id for m in models.data]
+        for m in ids:
+            if "70b" in m: return m
+        return ids[0]
     except: return "llama-3.3-70b-versatile"
 
-CURRENT_MODEL = get_alive_model()
+CURRENT_MODEL = get_best_model()
 
-# --- [데이터 수집부] 다중 소스 통합 ---
-def collect_all_news():
-    all_articles = []
+# --- [수집] 영문 멀티 소스 (Hacker News + DuckDuckGo News) ---
+def fetch_high_value_news():
+    combined_data = []
+    # 1. AI 반도체 & 생성형 비디오 타겟 검색 (DuckDuckGo API 활용)
+    queries = ["AI Semiconductor startup funding", "Generative Video AI new companies"]
     
-    # 1. Hacker News (최신 AI 트렌드)
+    for q in queries:
+        try:
+            # DuckDuckGo 뉴스 검색 (영문 전용)
+            url = f"https://api.duckduckgo.com/?q={q}&format=json"
+            res = requests.get(url).json()
+            if res.get('RelatedTopics'):
+                for topic in res['RelatedTopics'][:5]:
+                    if 'Text' in topic:
+                        combined_data.append({'title': topic['Text'], 'link': topic['FirstURL'], 'tag': q})
+        except: print(f"⚠️ {q} 검색 실패")
+
+    # 2. Hacker News (최고 점수 IT 뉴스)
     try:
-        hn_url = "http://hn.algolia.com/api/v1/search_by_date?query=AI OR LLM&tags=story&hitsPerPage=10"
+        hn_url = "http://hn.algolia.com/api/v1/search?query=AI&tags=story&numericFilters=points>50"
         res = requests.get(hn_url).json()
-        for h in res['hits']:
-            all_articles.append({'title': h['title'], 'link': h['url'], 'source': 'HackerNews'})
+        for h in res['hits'][:10]:
+            combined_data.append({'title': h['title'], 'link': h['url'], 'tag': 'High-Impact Tech'})
     except: print("⚠️ HN 수집 실패")
 
-    # 2. Yahoo Finance (AI/Tech 섹션 RSS 활용)
-    try:
-        # 야후 파이낸스 기술 섹션 RSS 주소
-        yf_url = "https://finance.yahoo.com/news/rssindex" # 혹은 특정 테크 RSS
-        # 여기서는 단순화를 위해 메이저 뉴스 API나 RSS 사용 (RSS 피드 주소는 유동적일 수 있음)
-        # 테스트용으로 TechCrunch RSS 대체 사용 (더 안정적)
-        tc_rss = "https://techcrunch.com/category/artificial-intelligence/feed/"
-        import feedparser # 만약 .yml에 feedparser 추가했다면 사용 가능, 없으면 requests로 쌩으로 파싱
-        # 여기서는 요청하신대로 소스 다양화에 집중
-    except: print("⚠️ Finance 수집 실패")
+    return combined_data
 
-    return all_articles
-
-# --- [가공부] 전문가급 분석 프롬프트 (가장 중요 ⭐) ---
-def analyze_high_quality(title, link, source):
-    # 단순히 요약하지 말고, 비즈니스 가치를 '추론'하게 시킴
+# --- [가공] 프로 투자자급 딥 애널리시스 ---
+def deep_analyze(title, link, tag):
     prompt = f"""
-    당신은 세계 최고의 테크 투자 심사역입니다. 다음 정보를 분석하여 '유료 구독 서비스'에 들어갈 고품질 리포트를 작성하세요.
-    제목: {title}
-    출처: {source}
-    링크: {link}
+    당신은 실리콘밸리 Tier-1 VC의 파트너입니다. 아래 영문 정보를 바탕으로 한국 투자자들을 위한 독점 리포트를 작성하세요.
+    
+    정보: {title}
+    태그: {tag}
+    관련링크: {link}
 
-    다음 형식의 JSON으로만 응답하세요:
+    반드시 아래 JSON 형식으로만 답변하세요:
     {{
-        "company_name": "대상 회사/서비스명",
-        "funding": "투자 단계 추정 (Seed/Series A/Unknown)",
-        "summary": "기술적 핵심을 짚은 1줄 요약",
-        "bm": "이것이 시장을 어떻게 뒤흔들 것인가? (수익화 시나리오 2가지)",
-        "score": 10점 만점 기준 투자 가치 점수,
-        "insight": "기사에는 없는 당신만의 날카로운 비즈니스 통찰 (한 문장)"
+        "company_name": "핵심 기업/프로젝트명",
+        "funding": "투자 라운드 및 규모 추정 (예: Series B / $200M)",
+        "summary": "기술적 진입장벽과 핵심 경쟁력 분석 (한국어)",
+        "bm": "향후 3년 내 예상 수익 모델 및 엑시트 가능성",
+        "score": 1-10점 사이의 투자 매력도,
+        "insight": "이 정보가 왜 지금 중요한가? (거시경제 및 산업 트렌드와 연결)"
     }}
     """
     try:
-        completion = groq_client.chat.completions.create(
+        completion = client.chat.completions.create(
             model=CURRENT_MODEL,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
         return json.loads(completion.choices[0].message.content)
-    except Exception as e:
-        print(f"❌ 분석 실패: {e}")
-        return None
+    except: return None
 
-# --- [적재부] 노션 업로드 (Insight 컬럼 필요 시 추가) ---
-def upload_to_notion(data, link):
-    try:
-        notion_client.pages.create(
-            parent={"database_id": NOTION_DATABASE_ID},
-            properties={
-                "회사명": {"title": [{"text": {"content": data.get("company_name", "Unknown")}}]},
-                "투자규모": {"rich_text": [{"text": {"content": data.get("funding", "-")}}]},
-                "한줄요약": {"rich_text": [{"text": {"content": data.get("summary", "-")}}]},
-                "비즈니스모델": {"rich_text": [{"text": {"content": f"BM: {data.get('bm')} / 인사이트: {data.get('insight')}"}}]},
-                "매력도": {"number": int(data.get("score", 0))},
-                "날짜": {"date": {"start": datetime.date.today().isoformat()}},
-                "원문링크": {"url": link}
-            }
-        )
-        print(f"✅ 완료: {data.get('company_name')}")
-    except Exception as e:
-        print(f"❌ 업로드 실패: {e}")
+# --- [적재] 노션 업로드 ---
+def push_to_notion(data, link):
+    notion.pages.create(
+        parent={"database_id": NOTION_DATABASE_ID},
+        properties={
+            "회사명": {"title": [{"text": {"content": data['company_name']}}]},
+            "투자규모": {"rich_text": [{"text": {"content": data['funding']}}]},
+            "한줄요약": {"rich_text": [{"text": {"content": data['summary']}}]},
+            "비즈니스모델": {"rich_text": [{"text": {"content": f"BM: {data['bm']} / 인사이트: {data['insight']}"}}]},
+            "매력도": {"number": int(data['score'])},
+            "원문링크": {"url": link}
+        }
+    )
 
 if __name__ == "__main__":
-    print(f"🚀 멀티 소스 가동 시작...")
-    news_list = collect_all_news()
+    print(f"🕵️‍♂️ 글로벌 AI 섹터(반도체/비디오) 정밀 스캔 시작... (Model: {CURRENT_MODEL})")
+    news_list = fetch_high_value_news()
     
-    # 중복 제거 및 유효성 검사
-    seen = set()
     for news in news_list:
-        if news['link'] and news['link'] not in seen:
-            print(f"분석 중: {news['title']} ({news['source']})")
-            result = analyze_high_quality(news['title'], news['link'], news['source'])
-            if result:
-                upload_to_notion(result, news['link'])
-                seen.add(news['link'])
-            time.sleep(1) # API 레이트 리밋 방지
+        if not news['link']: continue
+        print(f"🔍 분석 중: {news['title'][:50]}...")
+        analysis = deep_analyze(news['title'], news['link'], news['tag'])
+        if analysis and analysis.get('score', 0) >= 7: # 7점 이상의 고가치 정보만 엄선
+            push_to_notion(analysis, news['link'])
+            print(f"✅ 유료급 정보 업로드 완료: {analysis['company_name']}")
+        time.sleep(2)
