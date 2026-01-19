@@ -3,8 +3,8 @@ import requests
 import json
 import time
 import datetime
-from datetime import timedelta # 날짜 계산용
-import jwt
+from datetime import timedelta
+import jwt  # pip install pyjwt
 import xml.etree.ElementTree as ET
 from groq import Groq
 from notion_client import Client
@@ -28,7 +28,7 @@ def get_best_model():
 
 CURRENT_MODEL = get_best_model()
 
-# --- [Check 1] 중복 수집 방지 ---
+# --- [Function 1] 중복 뉴스 수집 방지 (링크 기준) ---
 def is_already_processed(link):
     try:
         query = notion.databases.query(
@@ -38,14 +38,13 @@ def is_already_processed(link):
         return len(query.get("results", [])) > 0
     except: return False
 
-# --- [Check 2] 7일 쿨타임 금지 목록 조회 (NEW) ---
+# --- [Function 2] 7일 쿨타임 금지 목록 조회 ---
 def get_banned_entities():
     banned_names = []
     try:
-        # 오늘 기준 7일 전 날짜 계산
         seven_days_ago = (datetime.date.today() - timedelta(days=7)).isoformat()
         
-        # LastPublished가 7일 이내인 데이터 조회
+        # LastPublished 날짜가 7일 이내인 기업 조회
         query = notion.databases.query(
             database_id=NOTION_DATABASE_ID,
             filter={
@@ -54,19 +53,19 @@ def get_banned_entities():
             }
         )
         for page in query.get("results", []):
-            # 회사명 추출
             props = page.get("properties", {})
             title_list = props.get("회사명", {}).get("title", [])
             if title_list:
                 banned_names.append(title_list[0].get("text", {}).get("content", ""))
         
-        print(f"🚫 Banned Companies (Cooldown Active): {banned_names}")
+        if banned_names:
+            print(f"🚫 Cooldown Active (Banned for 7 days): {set(banned_names)}")
         return set(banned_names)
     except Exception as e:
         print(f"⚠️ 쿨타임 조회 실패 (속성 없음?): {e}")
         return set()
 
-# --- [Action] 블로그 발행 후 날짜 도장 찍기 (NEW) ---
+# --- [Function 3] 블로그 발행 후 도장 찍기 ---
 def mark_as_published(page_id):
     try:
         notion.pages.update(
@@ -77,6 +76,38 @@ def mark_as_published(page_id):
         )
     except Exception as e:
         print(f"⚠️ 발행일 업데이트 실패: {e}")
+
+# --- [Function 4] 기업 히스토리 조회 (추세 분석용) ---
+def fetch_company_history(company_name):
+    try:
+        # 해당 기업명의 과거 기록을 날짜순으로 조회
+        query = notion.databases.query(
+            database_id=NOTION_DATABASE_ID,
+            filter={
+                "property": "회사명",
+                "title": {"equals": company_name}
+            },
+            sorts=[{"property": "날짜", "direction": "ascending"}]
+        )
+        
+        history_text = ""
+        results = query.get("results", [])
+        
+        # 최근 5개 데이터만 요약해서 문자열로 만듦
+        for page in results[-5:]:
+            props = page['properties']
+            try:
+                date = props['날짜']['date']['start']
+                score = props['매력도']['number']
+                summary = props['한줄요약']['rich_text'][0]['text']['content']
+                history_text += f"- [{date}] Score {score}/10: {summary}\n"
+            except: continue
+            
+        if not history_text:
+            return "No historical data available (New Entry)."
+        return history_text
+    except Exception as e:
+        return f"Error fetching history: {e}"
 
 # --- [Collection] Google News RSS ---
 def fetch_massive_infra_alpha():
@@ -93,10 +124,11 @@ def fetch_massive_infra_alpha():
     headers = {"User-Agent": "Mozilla/5.0"}
     for q in queries:
         try:
+            # &tbs=qdr:d (최근 24시간)
             url = f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en&tbs=qdr:d"
             response = requests.get(url, headers=headers, timeout=15)
             root = ET.fromstring(response.content)
-            for item in root.findall('.//item')[:5]: # 쿼리당 5개로 제한 (너무 많음 방지)
+            for item in root.findall('.//item')[:5]: 
                 link = item.find('link').text
                 if not is_already_processed(link):
                     data.append({'title': item.find('title').text, 'link': link})
@@ -128,7 +160,7 @@ def analyze_high_quality(title, link):
         return json.loads(completion.choices[0].message.content)
     except: return None
 
-# --- [Load] Notion ---
+# --- [Load] Notion (Append Mode for History) ---
 def push_to_notion(data, link):
     try:
         notion_tags = [{"name": tag} for tag in data.get('tags', ["AI Infra"])]
@@ -145,7 +177,6 @@ def push_to_notion(data, link):
                 "원문링크": {"url": link}
             }
         )
-        # 생성된 페이지 ID를 반환하여 나중에 업데이트할 수 있게 함
         data['page_id'] = response['id'] 
         return True
     except: return False
@@ -175,18 +206,18 @@ def find_company_logo(company_name):
         res = requests.get(search_url, timeout=5).json()
         if res.get('Image'): return res['Image']
     except: pass
-    return "https://via.placeholder.com/200?text=No+Logo"
+    return "https://via.placeholder.com/200?text=Logo"
 
-# --- [Report] Comparison ---
+# --- [Report] Comparison with History & Trend ---
 def create_comparison_report(results, banned_set):
     if not results: return
     
-    # 태그 빈도수 계산
+    # 카테고리 선정
     all_tags = []
     for r in results: all_tags.extend(r.get('tags', []))
     target_cat = max(set(all_tags), key=all_tags.count) if all_tags else "AI Infra"
     
-    # 1차 필터링: 해당 카테고리 + 금지 목록 제외
+    # 쿨타임 필터링
     candidates = []
     for r in results:
         is_target_cat = target_cat in r.get('tags', [])
@@ -196,7 +227,7 @@ def create_comparison_report(results, banned_set):
     
     candidates.sort(key=lambda x: x['impact_score'], reverse=True)
     
-    # 후보가 부족하면 쿨타임 무시하고 그냥 가져옴 (예외 처리)
+    # 후보 부족 시 쿨타임 해제 (예외 처리)
     if len(candidates) < 3:
         print("⚠️ Not enough unique candidates. Ignoring cooldown for this run.")
         candidates = [r for r in results if target_cat in r.get('tags', [])]
@@ -206,43 +237,61 @@ def create_comparison_report(results, banned_set):
     
     high, mid, low = candidates[0], candidates[len(candidates)//2], candidates[-1]
     
-    # 로고 찾기
+    # 히스토리 데이터 조회
+    high_hist = fetch_company_history(high['entity_name'])
+    mid_hist = fetch_company_history(mid['entity_name'])
+    low_hist = fetch_company_history(low['entity_name'])
+
+    # 로고 조회
     high_logo = find_company_logo(high['entity_name'])
     mid_logo = find_company_logo(mid['entity_name'])
     low_logo = find_company_logo(low['entity_name'])
 
     prompt = f"""
     Write a detailed A4-length HTML blog post.
-    Theme: {target_cat} Investment Analysis.
+    Theme: {target_cat} Market Analysis & Future Outlook.
+    
+    KEY INSTRUCTION: Analyze the provided 'Historical Data' to determine the trend (Rising, Falling, Stable).
     
     Structure:
-    1. <h2>Market Pulse: {target_cat}</h2> (Industry Context)
-    2. <h2>The Triad Analysis</h2> (Comparison Table style in text)
-       - Compare Leader vs Challenger vs Emerging.
+    1. <h2>Market Pulse: {target_cat}</h2>
+    2. <h2>Trend Analysis: Leader vs Challenger vs Emerging</h2>
+       - Include a "Trend Verdict" for each company based on history.
        - Use <img> tags for logos.
-    3. <h2>Deep Dive</h2> (Analysis of each)
-    4. <h2>Verdict</h2> (Investment Strategy)
+    3. <h2>Deep Dive</h2>
+    4. <h2>Verdict & Strategy</h2>
     
     Companies:
-    - Leader: {high['entity_name']} (Score {high['impact_score']}) - {high['tech_analysis']} (Logo: {high_logo})
-    - Challenger: {mid['entity_name']} (Score {mid['impact_score']}) - {mid['tech_analysis']} (Logo: {mid_logo})
-    - Emerging: {low['entity_name']} (Score {low['impact_score']}) - {low['tech_analysis']} (Logo: {low_logo})
+    1. LEADER: {high['entity_name']} (Score {high['impact_score']})
+       - Logo: {high_logo}
+       - Insight: {high['tech_analysis']}
+       - HISTORY: {high_hist}
+       
+    2. CHALLENGER: {mid['entity_name']} (Score {mid['impact_score']})
+       - Logo: {mid_logo}
+       - Insight: {mid['tech_analysis']}
+       - HISTORY: {mid_hist}
+       
+    3. EMERGING: {low['entity_name']} (Score {low['impact_score']})
+       - Logo: {low_logo}
+       - Insight: {low['tech_analysis']}
+       - HISTORY: {low_hist}
     
-    Output: HTML only. Professional Tone.
+    Output: HTML only. Professional VC Tone.
     """
     
     try:
         response = client.chat.completions.create(
             model=CURRENT_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=2500
+            max_tokens=3000
         )
         html = response.choices[0].message.content
-        title = f"[Weekly Alpha] {target_cat}: {high['entity_name']} vs {mid['entity_name']} ({datetime.date.today()})"
+        title = f"[Trend Report] {target_cat}: {high['entity_name']} vs {mid['entity_name']} ({datetime.date.today()})"
         
         post_to_ghost(title, html)
         
-        # [중요] 사용된 기업들 노션에 '사용됨' 도장 찍기
+        # [중요] 사용된 기업들 노션에 '사용됨' 도장 찍기 (쿨타임 시작)
         print("📝 Updating Cooldown status in Notion...")
         if 'page_id' in high: mark_as_published(high['page_id'])
         if 'page_id' in mid: mark_as_published(mid['page_id'])
@@ -254,7 +303,7 @@ def create_comparison_report(results, banned_set):
 if __name__ == "__main__":
     print("🚀 AI Bot Started. Fetching Banned List...")
     
-    # 1. 금지 목록(쿨타임) 가져오기
+    # 1. 쿨타임(7일) 목록 가져오기
     banned_companies = get_banned_entities()
     
     raw_list = fetch_massive_infra_alpha()
@@ -269,19 +318,18 @@ if __name__ == "__main__":
         res = analyze_high_quality(item['title'], item['link'])
         
         if res and int(res.get('impact_score', 0)) >= 6:
-            # 노션에 저장하면서 page_id 받아옴
+            # 노션에 데이터 저장 (Append Mode)
             if push_to_notion(res, item['link']):
                 report_pool.append(res)
                 success_count += 1
                 unique_links.add(item['link'])
                 print(f"   ✅ Saved: {res['entity_name']}")
-                time.sleep(5)
+                time.sleep(5) # 8초 -> 5초로 약간 단축
         else:
             time.sleep(1)
 
     if report_pool:
-        print(f"📊 Generating Blog Post (Excluding {len(banned_companies)} banned items)...")
-        # 금지 목록을 넘겨줘서 필터링 수행
+        print(f"📊 Generating Blog Post (Trend Analysis Included)...")
         create_comparison_report(report_pool, banned_companies)
 
     print("🏁 Done.")
