@@ -1,66 +1,83 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, Play } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 
 function App() {
-  const [currentStep, setCurrentStep] = useState(1); // 1: Deployment, 2: Configuration, 3: Launch
-  const [isPlaying, setIsPlaying] = useState(false);
-  const steps = [
-    { id: 1, name: 'Deployment (Deploy)', description: 'Deploying application...' },
-    { id: 2, name: 'Configuration', description: 'Configuring settings...' },
-    { id: 3, name: 'Launch', description: 'Launching the application...' }
-  ];
+  const [currentStep, setCurrentStep] = useState(0); // 진행 단계 상태
+  const [reportData, setReportData] = useState({}); // 보고서 데이터 상태
+  const [isGenerating, setIsGenerating] = useState(false); // 보고서 생성 중 상태
+  const steps = ['Data Collection', 'Data Analysis', 'Final Report']; // 진행 단계 배열
 
   useEffect(() => {
-    if (isPlaying) {
-      const intervalId = setInterval(() => {
-        if (currentStep < steps.length) {
-          setCurrentStep(prevStep => prevStep + 1);
-        } else {
-          setIsPlaying(false);
-        }
-      }, 2000); // Auto-proceed every 2 seconds
-      return () => clearInterval(intervalId);
+    // 로컬 스토리지에서 이전 진행 상태 로드
+    const storedStep = localStorage.getItem('currentStep');
+    if (storedStep) {
+      setCurrentStep(parseInt(storedStep));
     }
-  }, [isPlaying, currentStep, steps.length]);
+  }, []);
 
-  const handleButtonClick = () => {
-    if (isPlaying) {
-      setIsPlaying(false);
-    } else {
-      setIsPlaying(true);
-    }
+  useEffect(() => {
+    // 진행 상태 로컬 스토리지에 저장
+    localStorage.setItem('currentStep', currentStep.toString());
+  }, [currentStep]);
+
+  const handleGenerateReport = () => {
+    setIsGenerating(true);
+    // **예시: 실제 보고서 생성 로직 추가 (2초 대기)**
+    setTimeout(() => {
+      setReportData({ title: 'Final Report', content: 'This is your final report.' });
+      setIsGenerating(false);
+    }, 2000);
   };
 
-  const handleStepBack = () => {
-    if (currentStep > 1) {
-      setCurrentStep(prevStep => prevStep - 1);
-      setIsPlaying(false);
+  const handlePreviousStep = () => {
+    if (currentStep > 0) {
+      setCurrentStep((prevStep) => prevStep - 1);
     }
   };
 
   return (
-    <div className="flex justify-center items-center h-screen bg-gray-100">
-      <header className="bg-orange-500 p-4 rounded">
-        <p className="text-2xl text-white">AI Start Up Database Project</p>
-        <div className="mt-4">
-          <p className="text-lg text-white">Current Step: {steps[currentStep - 1].name}</p>
-          <p className="text-sm text-white">{steps[currentStep - 1].description}</p>
-        </div>
-        <div className="flex justify-center mt-4">
-          <button onClick={handleStepBack} className="bg-gray-300 hover:bg-gray-400 text-black font-bold py-2 px-4 rounded mr-2" disabled={currentStep === 1}">
-            <ArrowLeft size={20} /> Back
-          </button>
-          <button onClick={handleButtonClick} className={`bg-${isPlaying ? 'red' : 'blue'}-500 hover:bg-${isPlaying ? 'red' : 'blue'}-700 text-white font-bold py-2 px-4 rounded`}">
-            {isPlaying ? 'Stop' : 'Start'} {isPlaying && <Play size={20} />} 
-          </button>
-        </div>
-        <div className="mt-4 text-sm text-white">
-          {currentStep === steps.length ? 'Process Completed!' : `Step ${currentStep} of ${steps.length}`}
-        </div>
+    <div className="flex flex-col h-screen justify-center items-center bg-gray-100">
+      <header className="bg-blue-500 text-white p-4 mb-4">
+        <h2>AI Start Up Database Project</h2>
+        <p>Current Step: {steps[currentStep]}</p>
       </header>
-      <div className="absolute bottom-0 left-0 p-4 text-gray-500">
-        <small>Auto-proceeds every 2 seconds when playing.</small>
-      </div>
+      <main className="container mx-auto p-4">
+        {currentStep < steps.length - 1 && (
+          <div>
+            <p>Progress: {currentStep + 1}/{steps.length}</p>
+            <button
+              className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+              onClick={handleGenerateReport}
+            >
+              {isGenerating ? 'Generating...' : 'Proceed to Next Step'}
+            </button>
+          </div>
+        )}
+        {currentStep === steps.length - 1 && (
+          <div>
+            <h3>Final Report Preview</h3>
+            <div className="bg-white p-4 shadow-md">
+              <h4>{reportData.title}</h4>
+              <p>{reportData.content}</p>
+              <button
+                className="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded"
+                onClick={handleGenerateReport}
+              >
+                {isGenerating ? 'Generating Final Report...' : 'Generate Final Report'}
+              </button>
+            </div>
+            <button
+              className="bg-gray-300 hover:bg-gray-400 text-black font-bold py-2 px-4 rounded mt-4"
+              onClick={handlePreviousStep}
+            >
+              <ArrowLeft size={20} className="mr-2" /> Back to Previous Step
+            </button>
+          </div>
+        )}
+      </main>
+      <footer className="bg-gray-200 text-gray-600 p-4 mt-auto">
+        <p>&copy; 2023 AI Start Up</p>
+      </footer>
     </div>
   );
 }
